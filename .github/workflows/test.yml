@@ -1,0 +1,30 @@
+name: Workflow tests
+
+# Runs tests/ against the reusable workflows in this repo. The Dependabot
+# test reads the arming and sweep step scripts out of the workflow file and
+# runs them against a stub `gh`. No path filter, so the check can be required.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  test:
+    name: Reusable workflow tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Run the tests
+        run: |
+          python -m pip install pyyaml==6.0.2
+          python tests/test_dependabot_auto_merge.py

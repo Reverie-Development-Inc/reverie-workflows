@@ -1,0 +1,207 @@
+# Reusable Dependabot handler for Reverie Development repositories.
+#
+# A caller workflow in each repo runs this on `pull_request` (opened,
+# synchronize, reopened, ready_for_review) and on a weekly `schedule`:
+#
+#   jobs:
+#     dependabot:
+#       permissions:
+#         contents: write
+#         pull-requests: write
+#       uses: Reverie-Development-Inc/reverie-workflows/.github/workflows/dependabot-auto-merge.yml@<sha>
+#       with:
+#         auto-merge: true   # false where a merge deploys or publishes
+#
+# What it does:
+# - pull_request from dependabot[bot]: a patch or minor update (grouped or
+#   single) gets native auto-merge (`gh pr merge --auto`); GitHub merges it
+#   the moment the repository ruleset's required checks are green, so this
+#   workflow never polls and never re-runs CI. A major update gets the label
+#   `dependencies: major` and one comment; a human merges it.
+# - schedule: closes a Dependabot PR that a newer open Dependabot PR for the
+#   same ecosystem, directory and group supersedes, with a comment naming
+#   the newer PR.
+#
+# Why native auto-merge: it waits for the base branch's required status
+# checks, which a scheduled poller would have to re-implement by hand. A
+# branch with no required checks is refused below, because GitHub would merge
+# it at once.
+#
+# GitHub Actions updates are labelled, not armed. They change files under
+# .github/workflows/, and GITHUB_TOKEN cannot hold the `workflows` permission,
+# so GitHub can refuse the merge. A maintainer merges them with their own
+# token.
+#
+# Dependabot-triggered runs get a read-only GITHUB_TOKEN by default; the
+# caller's `permissions:` block raises it to the two scopes used here.
+# Nothing here reads repository secrets, so Dependabot secrets are not needed.
+#
+# Preconditions, checked at run time and failed loud: the repository allows
+# auto-merge (`gh repo edit --enable-auto-merge`), and the base branch has at
+# least one required status check in a ruleset.
+#
+# A red required check keeps the PR open (auto-merge waits for green).
+# That is the safety property: this workflow never merges on its own evidence.
+#
+# Gate labels (any label-triggered required check) must be added by a person.
+# A label added with GITHUB_TOKEN starts no workflow run (GitHub suppresses
+# GITHUB_TOKEN-triggered events except dispatch), so the gate would never run.
+# Auto-merge stays armed and merges once that run is green.
+
+name: Dependabot auto-merge (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      auto-merge:
+        description: enable auto-merge for patch and minor updates (false only labels)
+        type: boolean
+        default: true
+      merge-method:
+        description: squash, merge or rebase
+        type: string
+        default: squash
+      major-label:
+        description: label applied to major updates
+        type: string
+        default: "dependencies: major"
+      actions-label:
+        description: label applied to patch and minor GitHub Actions updates, which a maintainer merges
+        type: string
+        default: "dependencies: actions"
+
+permissions: {}
+
+jobs:
+  triage:
+    name: Auto-merge patch and minor, label major
+    if: github.event_name == 'pull_request' && github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Read update metadata
+        id: meta
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98  # v3.1.0
+
+      - name: Label a major update for a human
+        if: steps.meta.outputs.update-type == 'version-update:semver-major'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          LABEL: ${{ inputs.major-label }}
+          DEPS: ${{ steps.meta.outputs.dependency-names }}
+        run: |
+          set -euo pipefail
+          gh label create "$LABEL" --repo "$GITHUB_REPOSITORY" --color B60205 \
+            --description "Major Dependabot update: a human reviews and merges" --force
+          labels=$(gh pr view "$PR_URL" --json labels --jq '.labels[].name')
+          if grep -qxF "$LABEL" <<<"$labels"; then
+            echo "already labelled"; exit 0
+          fi
+          gh pr edit "$PR_URL" --add-label "$LABEL"
+          gh pr comment "$PR_URL" --body "Major update ($DEPS): held for a human review and merge. \
+          Patch and minor updates auto-merge when the required checks are green."
+
+      - name: Enable auto-merge for a patch or minor update
+        if: >-
+          inputs.auto-merge
+          && steps.meta.outputs.package-ecosystem != 'github_actions'
+          && (steps.meta.outputs.update-type == 'version-update:semver-minor'
+              || steps.meta.outputs.update-type == 'version-update:semver-patch')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          METHOD: ${{ inputs.merge-method }}
+          BASE: ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+          allowed=$(gh api "repos/$GITHUB_REPOSITORY" --jq .allow_auto_merge)
+          if [ "$allowed" != "true" ]; then
+            echo "::error::$GITHUB_REPOSITORY does not allow auto-merge; run: gh repo edit $GITHUB_REPOSITORY --enable-auto-merge"
+            exit 1
+          fi
+          # Armed auto-merge waits only for the base branch's required status
+          # checks. With none, GitHub merges at once, before CI has run, so this
+          # refuses. Only rulesets are read: the classic protection endpoint needs
+          # admin.
+          base_uri=$(jq -rn --arg b "$BASE" '$b | @uri')
+          required=$(gh api "repos/$GITHUB_REPOSITORY/rules/branches/$base_uri" \
+            --jq '[.[] | select(.type == "required_status_checks")
+                   | .parameters.required_status_checks[]] | length')
+          if [ "${required:-0}" -eq 0 ]; then
+            echo "::error::$BASE has no required status checks in $GITHUB_REPOSITORY," \
+              "so auto-merge would merge before CI ran. Add required checks to its" \
+              "ruleset, or set auto-merge: false in the caller."
+            exit 1
+          fi
+          # --auto returns 0 when auto-merge is already enabled; a PR that is
+          # already mergeable merges at once. Any other error fails loud.
+          gh pr merge --auto "--$METHOD" "$PR_URL"
+          echo "::notice::auto-merge ($METHOD) enabled for $PR_URL"
+
+      - name: Label a GitHub Actions update for a maintainer
+        if: >-
+          steps.meta.outputs.package-ecosystem == 'github_actions'
+          && (steps.meta.outputs.update-type == 'version-update:semver-minor'
+              || steps.meta.outputs.update-type == 'version-update:semver-patch')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          LABEL: ${{ inputs.actions-label }}
+        run: |
+          set -euo pipefail
+          gh label create "$LABEL" --repo "$GITHUB_REPOSITORY" --color FBCA04 \
+            --description "GitHub Actions update: a maintainer merges it with their own token" --force
+          labels=$(gh pr view "$PR_URL" --json labels --jq '.labels[].name')
+          if grep -qxF "$LABEL" <<<"$labels"; then
+            echo "already labelled"; exit 0
+          fi
+          gh pr edit "$PR_URL" --add-label "$LABEL"
+          echo "::notice::GitHub Actions update labelled for a maintainer; GITHUB_TOKEN cannot merge workflow changes"
+
+      - name: Report a patch or minor update left for a human
+        if: >-
+          !inputs.auto-merge
+          && (steps.meta.outputs.update-type == 'version-update:semver-minor'
+              || steps.meta.outputs.update-type == 'version-update:semver-patch')
+        run: echo "::notice::auto-merge is off in this repository; a maintainer merges this PR when its checks are green"
+
+  sweep:
+    name: Close superseded Dependabot PRs
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Close older PRs for the same ecosystem, directory and group
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Grouped branch names are dependabot/<ecosystem>/<directory>/<group>-<10 hex>.
+          # Two open PRs with the same name minus that hash are the same update
+          # stream; the older one is superseded. Ungrouped branches end in a
+          # version and are left alone. The jq filter below is single-quoted on
+          # purpose: $newest is a jq variable, not shell.
+          # shellcheck disable=SC2016
+          gh pr list --repo "$GITHUB_REPOSITORY" --state open --author app/dependabot --limit 200 \
+            --json number,headRefName,createdAt \
+            --jq 'map(select(.headRefName | test("-[0-9a-f]{10}$") and (test("-[0-9]{10}$") | not)))
+                  | sort_by(.createdAt) | reverse
+                  | map(. + {key: (.headRefName | sub("-[0-9a-f]{10}$"; ""))})
+                  | group_by(.key) | map(select(length > 1))
+                  | .[] | .[0] as $newest | .[1:][] | "\(.number) \($newest.number)"' \
+            > superseded.txt
+          if [ ! -s superseded.txt ]; then
+            echo "::notice::no superseded Dependabot PRs"; exit 0
+          fi
+          while read -r old new; do
+            echo "closing #$old (superseded by #$new)"
+            gh pr close "$old" --repo "$GITHUB_REPOSITORY" --delete-branch \
+              --comment "Superseded by #$new, which carries the same update stream."
+          done < superseded.txt
