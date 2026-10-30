@@ -1,8 +1,9 @@
 name: Workflow tests
 
 # Runs tests/ against the reusable workflows in this repo. The Dependabot
-# test reads the arming and sweep step scripts out of the workflow file and
-# runs them against a stub `gh`. No path filter, so the check can be required.
+# test reads the workflow file and runs the whole triage job, step by step,
+# and the weekly sweep against a stub `gh`. No path filter, so the check can
+# be required.
 on:
   pull_request:
   push:
