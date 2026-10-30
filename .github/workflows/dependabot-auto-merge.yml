@@ -11,26 +11,98 @@
 #       uses: Reverie-Development-Inc/reverie-workflows/.github/workflows/dependabot-auto-merge.yml@<sha>
 #       with:
 #         auto-merge: true   # false where a merge deploys or publishes
+#         arm-github-actions: false   # true only with a cooldown on github-actions entries
+#         hold-groups: calendar-versioned   # optional: groups that are never armed
+#         hold-label: "dependencies: ready"   # optional: this is the default
+#         unknown-label: "dependencies: review"   # optional: this is the default
 #
 # What it does:
 # - pull_request from dependabot[bot]: a patch or minor update (grouped or
-#   single) gets native auto-merge (`gh pr merge --auto`); GitHub merges it
+#   single) gets native auto-merge (`gh pr merge --auto`). GitHub merges it
 #   the moment the repository ruleset's required checks are green, so this
-#   workflow never polls and never re-runs CI. A major update gets the label
-#   `dependencies: major` and one comment; a human merges it.
-# - schedule: closes a Dependabot PR that a newer open Dependabot PR for the
-#   same ecosystem, directory and group supersedes, with a comment naming
-#   the newer PR.
+#   workflow never polls and never re-runs CI. A GitHub Actions update is
+#   armed only when `arm-github-actions` is true as well. A major update gets
+#   the `major-label` label and one comment, and a human merges it.
+# - Every GitHub Actions update that fetch-metadata can read also gets the
+#   `actions-label` label as a marker, whatever its update type. A PR is a
+#   GitHub Actions update when fetch-metadata names that ecosystem in any
+#   spelling, or when it changes a file under .github/workflows/ or an
+#   action.yml or action.yaml file. A PR whose file list reaches the API's
+#   cap of 3000 files counts too, because the cap can hide such a file. A
+#   PR that fetch-metadata rejects gets only the `unknown-label` label.
+# - These updates are never armed. They get the `hold-label` label, and a
+#   maintainer merges them: a patch or minor update when `auto-merge` is
+#   false, a patch or minor GitHub Actions update when `arm-github-actions` is
+#   false, any update with a known type in a group that `hold-groups`
+#   lists, and any update with a known type whose commits the API cannot
+#   list in full or whose head moved after the run started. The run for the
+#   new head decides again.
+# - An update without a known type for every dependency is never armed. It
+#   gets the `unknown-label` label, one comment and a warning, and a person
+#   reviews it. Some bumps from one commit SHA to another have no type. A PR
+#   that fetch-metadata rejects, for example because its oldest commit is not
+#   a verified Dependabot commit, gets the same label and one comment.
+# - A PR with a commit that is not a verified Dependabot commit, such as a
+#   fix that a person pushed on top or a Dependabot commit that a maintainer
+#   amended and signed, is never armed. It gets the `hold-label` label unless
+#   its update type is unknown. An unsigned amend of the oldest commit makes
+#   fetch-metadata reject the PR, so it gets the `unknown-label` label. fetch-metadata checks only the oldest commit of a PR, so
+#   this workflow checks the author, committer and signature of every commit.
+# - Auto-merge is armed only for the newest commit that the workflow checked,
+#   and only when that commit is the head that the event names. GitHub
+#   refuses to arm a head that changed after the check. But a later push by
+#   someone with write access does not turn off auto-merge. It stays on until
+#   the run for that push turns it off, and if the required checks pass
+#   first, the new head can merge. A base-branch change by someone with write
+#   access, and a push that starts no workflow run, such as a push with
+#   GITHUB_TOKEN or with [skip ci] in its head commit message, keep
+#   auto-merge on with no run to turn it off. Turn off auto-merge before you
+#   push to an armed Dependabot PR or change its base branch.
+# - A hold or unknown label that no longer applies is removed, for example
+#   after `arm-github-actions` is turned on or the update type becomes known.
+# - When a run does not arm a PR, it turns off auto-merge that GITHUB_TOKEN
+#   enabled. That includes a run in which a step fails, for example when
+#   GitHub refuses to arm a head that changed after the check, or when
+#   fetch-metadata rejects the PR. GitHub reports every workflow that uses
+#   GITHUB_TOKEN as the same bot, so the run also turns off auto-merge that
+#   another workflow in the repository enabled with GITHUB_TOKEN. Auto-merge
+#   that a person enabled stays on, and the workflow does not arm over it.
+# - The workflow creates only the labels that the repository lacks, so an
+#   existing label keeps its color and description. As on GitHub, label names
+#   match without regard to case.
+# - schedule: closes a grouped Dependabot PR that a newer open Dependabot PR
+#   with the same branch key, group, directories and base branch supersedes, with
+#   a comment naming the newer PR. It closes the older PR only when the newer
+#   PR changes every file that the older PR changes, and every commit on the
+#   older PR is a verified Dependabot commit. The API lists at most 3000
+#   files and 250 commits, and a list that reaches its limit fails the check.
+#   A PR that fails one of these checks stays open.
+#
+# Why `hold-groups`: a date-style version such as 2026.7.1 to 2026.10.5 counts
+# as a minor update, so a group of such dependencies auto-merges unless it is
+# listed. It matches Dependabot groups only: to hold an ungrouped dependency,
+# put it in a group. A listed name also matches the subgroups that
+# `group-by: dependency-name` makes, which are named <name>/<dependency>. A
+# Dependabot group covers version updates only, unless it sets
+# `applies-to: security-updates`. To hold the security updates of a
+# dependency too, list a security-updates group in `hold-groups` as well.
 #
 # Why native auto-merge: it waits for the base branch's required status
 # checks, which a scheduled poller would have to re-implement by hand. A
 # branch with no required checks is refused below, because GitHub would merge
 # it at once.
 #
-# GitHub Actions updates are labelled, not armed. They change files under
-# .github/workflows/, and GITHUB_TOKEN cannot hold the `workflows` permission,
-# so GitHub can refuse the merge. A maintainer merges them with their own
-# token.
+# Why `arm-github-actions`: a GitHub Actions update changes files under
+# .github/workflows/ and brings in third-party action code. Arming it removes
+# the human review of that code, so a caller sets `arm-github-actions: true`
+# only when every github-actions entry in its dependabot.yml has a Dependabot
+# `cooldown`. This repository uses 7 days. If GitHub refuses an armed merge,
+# the PR stays open with its marker label. Dependabot applies `cooldown` to
+# version updates only. With `arm-github-actions: true`, a security update
+# for an Action is armed as soon as it opens. The workflow cannot tell a
+# security update from a version update: fetch-metadata reports that only
+# with `alert-lookup`, which needs a token that can read Dependabot alerts,
+# and this workflow uses GITHUB_TOKEN only.
 #
 # Dependabot-triggered runs get a read-only GITHUB_TOKEN by default; the
 # caller's `permissions:` block raises it to the two scopes used here.
@@ -54,9 +126,13 @@ on:
   workflow_call:
     inputs:
       auto-merge:
-        description: enable auto-merge for patch and minor updates (false only labels)
+        description: enable auto-merge for patch and minor updates (false labels them with hold-label instead)
         type: boolean
         default: true
+      arm-github-actions:
+        description: also arm patch and minor GitHub Actions updates when auto-merge is true. Set it only when every github-actions entry in dependabot.yml has a cooldown
+        type: boolean
+        default: false
       merge-method:
         description: squash, merge or rebase
         type: string
@@ -66,9 +142,21 @@ on:
         type: string
         default: "dependencies: major"
       actions-label:
-        description: label applied to patch and minor GitHub Actions updates, which a maintainer merges
+        description: marker label applied to every GitHub Actions update that fetch-metadata can read, whatever its update type
         type: string
         default: "dependencies: actions"
+      hold-label:
+        description: label for a patch or minor update that is not armed (auto-merge or, for GitHub Actions, arm-github-actions is false), and for any known update in a hold-groups group, with a commit that Dependabot did not make, with commits that the API cannot list in full, or with a head that moved after the run started, which a maintainer merges
+        type: string
+        default: "dependencies: ready"
+      unknown-label:
+        description: label for an update without a known type for every dependency, which a person reviews
+        type: string
+        default: "dependencies: review"
+      hold-groups:
+        description: comma-separated Dependabot group names whose PRs are never armed. A PR with a known update type gets hold-label. A name also matches its group-by subgroups (name/dependency). It matches groups only, so put an ungrouped dependency in a group to hold it. A group covers version updates only unless its applies-to is security-updates, so also list a security-updates group to hold security updates
+        type: string
+        default: ""
 
 permissions: {}
 
@@ -76,8 +164,15 @@ jobs:
   triage:
     name: Auto-merge patch and minor, label major
     if: github.event_name == 'pull_request' && github.event.pull_request.user.login == 'dependabot[bot]'
+    # GitHub-hosted on purpose: the job makes only API calls and runs in every caller repository, including ones without other runner pools.
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # Runs for one PR never overlap, so two runs cannot both label it and
+    # comment. GitHub keeps one pending run per group: a newer run cancels an
+    # older pending one, and the newest run executes.
+    concurrency:
+      group: dependabot-triage-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
     permissions:
       contents: write
       pull-requests: write
@@ -86,38 +181,236 @@ jobs:
         id: meta
         uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98  # v3.1.0
 
-      - name: Label a major update for a human
-        if: steps.meta.outputs.update-type == 'version-update:semver-major'
+      - name: Decide whether to arm the update and which labels it gets
+        id: decide
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
+          UPDATE_TYPE: ${{ steps.meta.outputs.update-type }}
+          DEPS_JSON: ${{ steps.meta.outputs.updated-dependencies-json }}
+          DEPS: ${{ steps.meta.outputs.dependency-names }}
+          ECOSYSTEM: ${{ steps.meta.outputs.package-ecosystem }}
+          GROUP: ${{ steps.meta.outputs.dependency-group }}
+          AUTO_MERGE: ${{ inputs.auto-merge }}
+          ARM_ACTIONS: ${{ inputs.arm-github-actions }}
+          HOLD_GROUPS: ${{ inputs.hold-groups }}
+          MAJOR_LABEL: ${{ inputs.major-label }}
+          ACTIONS_LABEL: ${{ inputs.actions-label }}
+          HOLD_LABEL: ${{ inputs.hold-label }}
+          UNKNOWN_LABEL: ${{ inputs.unknown-label }}
+        run: |
+          set -euo pipefail
+          # fetch-metadata reports the highest update type that it could read
+          # and skips a dependency without one, so every dependency needs a
+          # known type.
+          update_type=$UPDATE_TYPE
+          if ! jq -e 'length > 0 and all(.[]; .updateType | IN("version-update:semver-major",
+                "version-update:semver-minor", "version-update:semver-patch"))' \
+              <<<"$DEPS_JSON" >/dev/null; then
+            update_type=unknown
+          fi
+          # "Is GitHub Actions" fails closed. fetch-metadata reads the ecosystem
+          # from the branch name, which pull-request-branch-name options can
+          # change or drop, so a changed workflow or action file counts too.
+          actions=false
+          case "${ECOSYSTEM,,}" in
+            github_actions | github-actions | github) actions=true ;;
+          esac
+          files=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/files?per_page=100" --paginate --jq '.[].filename')
+          if grep -qE '(^|/)\.github/workflows/|(^|/)action\.ya?ml$' <<<"$files"; then
+            actions=true
+          fi
+          # A list at the API's cap of 3000 files can hide such a file.
+          if [ "$(grep -c . <<<"$files" || true)" -ge 3000 ]; then
+            actions=true
+          fi
+          # fetch-metadata checks only the oldest commit, and the API lists the
+          # oldest commit first, so a person's commit on top passes that check.
+          # Every commit must be a verified Dependabot commit. GitHub verifies
+          # the signature of the committer, and Dependabot's commits have the
+          # committer web-flow, so a maintainer who amends or rebases with
+          # signing keeps the author but not the committer. The API lists at
+          # most 250 commits, so a PR with that many cannot be checked in full.
+          commits=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/commits?per_page=100" --paginate \
+            --jq '.[] | "\(.sha) \(.author.login // "-") \(.committer.login // "-") \(.commit.verification.verified // false)"')
+          count=$(grep -c . <<<"$commits" || true)
+          foreign=$(grep -cvE '^[0-9a-f]+ dependabot\[bot\] web-flow true$' <<<"$commits" || true)
+          # The newest commit that was checked. Auto-merge is armed for it only.
+          head=$(tail -n 1 <<<"$commits" | cut -d ' ' -f 1)
+          trusted=false
+          if [ "$count" -eq 0 ] || [ "$count" -ge 250 ]; then
+            why="the commits of this PR cannot all be listed"
+          elif [ "$foreign" -gt 0 ]; then
+            why="a commit on this PR is not a verified Dependabot commit"
+          elif [ "$head" != "$EVENT_HEAD" ]; then
+            # A push after the event starts another run, which checks the new
+            # head, so this run arms nothing.
+            why="the PR head changed after this run started"
+          else
+            trusted=true
+          fi
+          # hold-groups lists whole group names, comma-separated. Whitespace
+          # around a name is ignored. A config group name cannot contain "/",
+          # so <name>/<dependency> can only be a group-by subgroup of <name>.
+          held=$(jq -rn --arg list "$HOLD_GROUPS" --arg group "$GROUP" \
+            '$group != "" and any($list | splits("[,\\s]+"); . as $name
+              | $name != "" and ($group == $name or ($group | startswith($name + "/"))))')
+          # Whether a patch or minor update of this PR is armed, and if not, why.
+          armable=false
+          if [ "$trusted" != true ]; then
+            reason=$why
+          elif [ "$held" = true ]; then
+            reason="the $GROUP group is in hold-groups"
+          elif [ "$AUTO_MERGE" != true ]; then
+            reason="auto-merge is off in this repository"
+          elif [ "$actions" = true ] && [ "$ARM_ACTIONS" != true ]; then
+            reason="arm-github-actions is off in this repository"
+          else
+            armable=true
+          fi
+          labels='[]' remove='[]'
+          # Arguments: name, color, description, and a PR comment or "".
+          add_label() {
+            labels=$(jq -c --arg name "$1" --arg color "$2" --arg description "$3" --arg comment "$4" \
+              '. + [{name: $name, color: $color, description: $description, comment: $comment}]' <<<"$labels")
+          }
+          arm=false hold=false
+          if [ "$actions" = true ]; then
+            add_label "$ACTIONS_LABEL" FBCA04 "Dependabot update of GitHub Actions" ""
+          fi
+          case "$update_type" in
+            version-update:semver-major)
+              comment="Major update ($DEPS): held for a human review and merge."
+              # Name auto-merge only where it applies.
+              if [ "$armable" = true ]; then
+                comment="$comment Patch and minor updates auto-merge when the required checks are green."
+              fi
+              add_label "$MAJOR_LABEL" B60205 "Major Dependabot update: a human reviews and merges" "$comment"
+              if [ "$held" = true ] || [ "$trusted" != true ]; then
+                hold=true
+              fi
+              ;;
+            version-update:semver-minor | version-update:semver-patch)
+              if [ "$armable" = true ]; then
+                arm=true
+              else
+                hold=true
+                echo "::notice::$reason, so a maintainer merges this PR when its checks are green"
+              fi
+              ;;
+            *)
+              echo "::warning::fetch-metadata could not read the update type of every dependency (it reports '$UPDATE_TYPE'), so this PR is not armed. A person reviews it."
+              add_label "$UNKNOWN_LABEL" D93F0B "Dependabot update of unknown type: a person reviews it" \
+                "Dependabot update ($DEPS): its update type could not be read, so it is not armed. A person must review it and merge it."
+              ;;
+          esac
+          if [ "$hold" = true ]; then
+            add_label "$HOLD_LABEL" 0E8A16 "Dependabot update that is not armed for auto-merge: a maintainer merges it" ""
+          else
+            remove=$(jq -c --arg name "$HOLD_LABEL" '. + [$name]' <<<"$remove")
+          fi
+          if [ "$update_type" != unknown ]; then
+            remove=$(jq -c --arg name "$UNKNOWN_LABEL" '. + [$name]' <<<"$remove")
+          fi
+          {
+            echo "arm=$arm"
+            echo "head=$head"
+            echo "labels=$labels"
+            echo "remove=$remove"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Flag a PR that fetch-metadata rejected
+        id: rejected
+        if: ${{ !cancelled() && steps.meta.outcome == 'failure' }}
+        env:
+          HOLD_LABEL: ${{ inputs.hold-label }}
+          UNKNOWN_LABEL: ${{ inputs.unknown-label }}
+        run: |
+          set -euo pipefail
+          # fetch-metadata fails, and the decide step is skipped, when the
+          # oldest commit is not a verified Dependabot commit or the PR has no
+          # Dependabot metadata. Nothing about the update is known, so the PR
+          # gets the unknown label and one comment, like an unknown update.
+          echo "::warning::fetch-metadata could not read this PR, so it is not armed. A person reviews it."
+          labels=$(jq -cn --arg name "$UNKNOWN_LABEL" '[{name: $name, color: "D93F0B",
+            description: "Dependabot update of unknown type: a person reviews it",
+            comment: "fetch-metadata could not read this PR, for example because its oldest commit is not a verified Dependabot commit, so it is not armed. A person must review it and merge it."}]')
+          {
+            echo "labels=$labels"
+            echo "remove=$(jq -cn --arg name "$HOLD_LABEL" '[$name]')"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Label the PR, and comment on a major or unknown update
+        if: ${{ !cancelled() && (steps.decide.outcome == 'success' || steps.rejected.outcome == 'success') }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
-          LABEL: ${{ inputs.major-label }}
-          DEPS: ${{ steps.meta.outputs.dependency-names }}
+          # Only one of decide and rejected runs, so one value of each pair is
+          # empty.
+          LABELS: ${{ steps.decide.outputs.labels }}${{ steps.rejected.outputs.labels }}
+          REMOVE: ${{ steps.decide.outputs.remove }}${{ steps.rejected.outputs.remove }}
         run: |
           set -euo pipefail
-          gh label create "$LABEL" --repo "$GITHUB_REPOSITORY" --color B60205 \
-            --description "Major Dependabot update: a human reviews and merges" --force
-          labels=$(gh pr view "$PR_URL" --json labels --jq '.labels[].name')
-          if grep -qxF "$LABEL" <<<"$labels"; then
-            echo "already labelled"; exit 0
-          fi
-          gh pr edit "$PR_URL" --add-label "$LABEL"
-          gh pr comment "$PR_URL" --body "Major update ($DEPS): held for a human review and merge. \
-          Patch and minor updates auto-merge when the required checks are green."
+          # GitHub label names match without regard to case, so every check
+          # below does too.
+          current=$(gh pr view "$PR_URL" --json labels --jq '.labels[].name')
+          # Remove a hold or review label that no longer applies, for example
+          # after arm-github-actions is turned on or the update type is known.
+          stale=$(jq -rn --argjson remove "$REMOVE" --argjson add "$LABELS" --arg current "$current" '
+            [$add[].name | ascii_downcase] as $keep
+            | [$remove[] | ascii_downcase | select(IN($keep[]) | not)] as $drop
+            | $current | split("\n")[] | select(ascii_downcase | IN($drop[]))')
+          # Read each list on its own descriptor, so no command in a loop can
+          # consume it from stdin.
+          while IFS= read -r -u 3 label; do
+            [ -n "$label" ] || continue
+            gh pr edit "$PR_URL" --remove-label "$label"
+          done 3<<<"$stale"
+          [ "$LABELS" != "[]" ] || exit 0
+          # Create only the labels that the repository lacks, so an existing
+          # label keeps its color and description. A concurrent run can create
+          # the same label first, so a failed create passes when the label now
+          # exists, and fails the step when it does not.
+          existing=$(gh api "repos/$GITHUB_REPOSITORY/labels?per_page=100" --paginate --jq '.[].name')
+          entries=$(jq -c '.[]' <<<"$LABELS")
+          while IFS= read -r -u 3 entry; do
+            [ -n "$entry" ] || continue
+            name=$(jq -r .name <<<"$entry")
+            if ! grep -qixF -- "$name" <<<"$existing"; then
+              if ! gh label create "$name" --repo "$GITHUB_REPOSITORY" \
+                --color "$(jq -r .color <<<"$entry")" --description "$(jq -r .description <<<"$entry")"; then
+                gh api "repos/$GITHUB_REPOSITORY/labels/$(jq -rn --arg n "$name" '$n | @uri')" --silent
+              fi
+            fi
+            # The comment goes with the label, so it is posted once.
+            if grep -qixF -- "$name" <<<"$current"; then
+              echo "already labelled: $name"
+              continue
+            fi
+            gh pr edit "$PR_URL" --add-label "$name"
+            comment=$(jq -r .comment <<<"$entry")
+            if [ -n "$comment" ]; then
+              gh pr comment "$PR_URL" --body "$comment"
+            fi
+          done 3<<<"$entries"
 
       - name: Enable auto-merge for a patch or minor update
-        if: >-
-          inputs.auto-merge
-          && steps.meta.outputs.package-ecosystem != 'github_actions'
-          && (steps.meta.outputs.update-type == 'version-update:semver-minor'
-              || steps.meta.outputs.update-type == 'version-update:semver-patch')
+        id: arm
+        if: steps.decide.outputs.arm == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
           METHOD: ${{ inputs.merge-method }}
           BASE: ${{ github.event.pull_request.base.ref }}
+          HEAD_SHA: ${{ steps.decide.outputs.head }}
         run: |
           set -euo pipefail
+          # gh drops an empty --match-head-commit and would arm any head.
+          if [ -z "$HEAD_SHA" ]; then
+            echo "::error::no checked head commit to arm auto-merge for"
+            exit 1
+          fi
           allowed=$(gh api "repos/$GITHUB_REPOSITORY" --jq .allow_auto_merge)
           if [ "$allowed" != "true" ]; then
             echo "::error::$GITHUB_REPOSITORY does not allow auto-merge; run: gh repo edit $GITHUB_REPOSITORY --enable-auto-merge"
@@ -137,71 +430,131 @@ jobs:
               "ruleset, or set auto-merge: false in the caller."
             exit 1
           fi
+          # Do not arm over auto-merge that someone else enabled: gh sends the
+          # mutation again, which would make this workflow its owner. An arm
+          # by an earlier run is renewed, so GitHub checks the head again.
+          enabled_by=$(gh pr view "$PR_URL" --json autoMergeRequest --jq '.autoMergeRequest.enabledBy.login // ""')
+          case "$enabled_by" in
+            "" | app/github-actions | github-actions) ;;
+            *)
+              echo "::notice::auto-merge stays as $enabled_by enabled it"
+              exit 0
+              ;;
+          esac
           # --auto returns 0 when auto-merge is already enabled; a PR that is
           # already mergeable merges at once. Any other error fails loud.
-          gh pr merge --auto "--$METHOD" "$PR_URL"
+          # --match-head-commit makes GitHub refuse to arm a head that the
+          # decide step did not check, for example after a new push.
+          gh pr merge --auto "--$METHOD" --match-head-commit "$HEAD_SHA" "$PR_URL"
           echo "::notice::auto-merge ($METHOD) enabled for $PR_URL"
 
-      - name: Label a GitHub Actions update for a maintainer
-        if: >-
-          steps.meta.outputs.package-ecosystem == 'github_actions'
-          && (steps.meta.outputs.update-type == 'version-update:semver-minor'
-              || steps.meta.outputs.update-type == 'version-update:semver-patch')
+      - name: Turn off auto-merge that GITHUB_TOKEN enabled
+        # Runs last, also after a failed or skipped step: auto-merge from an
+        # earlier run must not merge a head that this run did not arm. That
+        # covers a PR that is not armed, a refused arm (for example after a
+        # push, or with no required checks), and a fetch-metadata failure.
+        if: ${{ always() && (steps.decide.outputs.arm != 'true' || steps.arm.outcome != 'success') }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
-          LABEL: ${{ inputs.actions-label }}
         run: |
           set -euo pipefail
-          gh label create "$LABEL" --repo "$GITHUB_REPOSITORY" --color FBCA04 \
-            --description "GitHub Actions update: a maintainer merges it with their own token" --force
-          labels=$(gh pr view "$PR_URL" --json labels --jq '.labels[].name')
-          if grep -qxF "$LABEL" <<<"$labels"; then
-            echo "already labelled"; exit 0
-          fi
-          gh pr edit "$PR_URL" --add-label "$LABEL"
-          echo "::notice::GitHub Actions update labelled for a maintainer; GITHUB_TOKEN cannot merge workflow changes"
-
-      - name: Report a patch or minor update left for a human
-        if: >-
-          !inputs.auto-merge
-          && (steps.meta.outputs.update-type == 'version-update:semver-minor'
-              || steps.meta.outputs.update-type == 'version-update:semver-patch')
-        run: echo "::notice::auto-merge is off in this repository; a maintainer merges this PR when its checks are green"
+          # Turn off only the auto-merge that GitHub Actions enabled. gh reports
+          # that bot as app/github-actions.
+          enabled_by=$(gh pr view "$PR_URL" --json autoMergeRequest --jq '.autoMergeRequest.enabledBy.login // ""')
+          case "$enabled_by" in
+            "")
+              echo "auto-merge is not enabled"
+              ;;
+            app/github-actions | github-actions)
+              gh pr merge --disable-auto "$PR_URL"
+              echo "::notice::auto-merge that GITHUB_TOKEN enabled is now off, because this run did not arm this PR"
+              ;;
+            *)
+              echo "::notice::auto-merge stays on, because $enabled_by enabled it"
+              ;;
+          esac
 
   sweep:
     name: Close superseded Dependabot PRs
     if: github.event_name == 'schedule'
+    # GitHub-hosted on purpose: the job makes only API calls and runs in every caller repository, including ones without other runner pools.
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: write
       pull-requests: write
     steps:
-      - name: Close older PRs for the same ecosystem, directory and group
+      - name: Close older PRs for the same branch key, group, directories and base
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          # Grouped branch names are dependabot/<ecosystem>/<directory>/<group>-<10 hex>.
-          # Two open PRs with the same name minus that hash are the same update
-          # stream; the older one is superseded. Ungrouped branches end in a
-          # version and are left alone. The jq filter below is single-quoted on
-          # purpose: $newest is a jq variable, not shell.
+          # A grouped PR's title names its group: "Bump the <group> group ..."
+          # or, with one update, "Bump <name> from <a> to <b> in the <group>
+          # group". Its branch ends in <group>-<10 hex>, as in
+          # dependabot/<ecosystem>/<directory>/<group>-<10 hex>. The title marks
+          # a grouped PR, because the branch alone cannot: an ungrouped branch
+          # can end in ten hex digits too, and a hash can be all digits. Two
+          # grouped PRs of the same group whose branches differ only in the
+          # hash can be the same update stream, and then the older one is
+          # superseded. The group, the title's directory clause ("in /<dir>" or
+          # "across N directories") and the base branch are part of the stream
+          # too. With a "-" separator, group build-deps in /web and group
+          # web-build-deps in / share a branch, and so do group deps in
+          # /web/build and in /web-build. The jq filter below is single-quoted
+          # on purpose: $group and $newest are jq variables, not shell.
           # shellcheck disable=SC2016
           gh pr list --repo "$GITHUB_REPOSITORY" --state open --author app/dependabot --limit 200 \
-            --json number,headRefName,createdAt \
-            --jq 'map(select(.headRefName | test("-[0-9a-f]{10}$") and (test("-[0-9]{10}$") | not)))
+            --json number,headRefName,title,createdAt,baseRefName \
+            --jq 'map(select(.headRefName | test("-[0-9a-f]{10}$"))
+                      | (.title | capture("\\b(?:bump|in) the (?<group>\\S+) group\\b"; "i").group) as $group
+                      | . + {key: (.headRefName | sub("-[0-9a-f]{10}$"; "")), group: $group,
+                             dirs: ([.title | scan("\\b(?:in /\\S*|across [0-9]+ director(?:y|ies))"; "i")] | first // "")}
+                      | select(.key | endswith($group)))
                   | sort_by(.createdAt) | reverse
-                  | map(. + {key: (.headRefName | sub("-[0-9a-f]{10}$"; ""))})
-                  | group_by(.key) | map(select(length > 1))
+                  | group_by([.baseRefName, .key, .group, .dirs]) | map(select(length > 1))
                   | .[] | .[0] as $newest | .[1:][] | "\(.number) \($newest.number)"' \
             > superseded.txt
           if [ ! -s superseded.txt ]; then
             echo "::notice::no superseded Dependabot PRs"; exit 0
           fi
-          while read -r old new; do
+          # pull-request-branch-name options can drop the ecosystem from the
+          # branch name, so two update streams can still share a key above.
+          # The older PR is closed only when the newer PR changes every file
+          # that it changes, and only when every commit on it is a verified
+          # Dependabot commit, as in the decide step of the triage job. So a PR
+          # with a fix that a maintainer pushed is not closed, and its branch
+          # is not deleted. The API lists at most 3000 files and 250 commits,
+          # and a list that reaches its limit fails the check. Read the pairs
+          # on their own descriptor, so no command in the loop can consume
+          # them from stdin.
+          while read -r -u 3 old new; do
+            old_files=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$old/files?per_page=100" --paginate --jq '.[].filename')
+            new_files=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$new/files?per_page=100" --paginate --jq '.[].filename')
+            old_count=$(grep -c . <<<"$old_files" || true)
+            new_count=$(grep -c . <<<"$new_files" || true)
+            # The files that the older PR changes and the newer PR does not.
+            missing=$(LC_ALL=C comm -23 <(LC_ALL=C sort -u <<<"$old_files") <(LC_ALL=C sort -u <<<"$new_files"))
+            commits=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$old/commits?per_page=100" --paginate \
+              --jq '.[] | "\(.sha) \(.author.login // "-") \(.committer.login // "-") \(.commit.verification.verified // false)"')
+            count=$(grep -c . <<<"$commits" || true)
+            foreign=$(grep -cvE '^[0-9a-f]+ dependabot\[bot\] web-flow true$' <<<"$commits" || true)
+            why=""
+            if [ "$old_count" -ge 3000 ] || [ "$new_count" -ge 3000 ]; then
+              why="the changed files of #$old or #$new cannot all be listed"
+            elif [ -n "$missing" ]; then
+              why="#$new does not change every file that #$old changes"
+            elif [ "$count" -eq 0 ] || [ "$count" -ge 250 ]; then
+              why="the commits of #$old cannot all be listed"
+            elif [ "$foreign" -gt 0 ]; then
+              why="a commit on #$old is not a verified Dependabot commit"
+            fi
+            if [ -n "$why" ]; then
+              echo "::notice::#$old stays open alongside #$new, because $why"
+              continue
+            fi
             echo "closing #$old (superseded by #$new)"
             gh pr close "$old" --repo "$GITHUB_REPOSITORY" --delete-branch \
               --comment "Superseded by #$new, which carries the same update stream."
-          done < superseded.txt
+          done 3< superseded.txt
