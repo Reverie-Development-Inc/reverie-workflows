@@ -16,109 +16,26 @@
 #         hold-label: "dependencies: ready"   # optional: this is the default
 #         unknown-label: "dependencies: review"   # optional: this is the default
 #
-# What it does:
-# - pull_request from dependabot[bot]: a patch or minor update (grouped or
-#   single) gets native auto-merge (`gh pr merge --auto`). GitHub merges it
-#   the moment the repository ruleset's required checks are green, so this
-#   workflow never polls and never re-runs CI. A GitHub Actions update is
-#   armed only when `arm-github-actions` is true as well. A major update gets
-#   the `major-label` label and one comment, and a human merges it.
-# - Every GitHub Actions update that fetch-metadata can read also gets the
-#   `actions-label` label as a marker, whatever its update type. A PR is a
-#   GitHub Actions update when fetch-metadata names that ecosystem in any
-#   spelling, or when it changes a file under .github/workflows/ or an
-#   action.yml or action.yaml file. A PR whose file list reaches the API's
-#   cap of 3000 files counts too, because the cap can hide such a file. A
-#   PR that fetch-metadata rejects gets only the `unknown-label` label.
-# - These updates are never armed. They get the `hold-label` label, and a
-#   maintainer merges them: a patch or minor update when `auto-merge` is
-#   false, a patch or minor GitHub Actions update when `arm-github-actions` is
-#   false, any update with a known type in a group that `hold-groups`
-#   lists, and any update with a known type whose commits the API cannot
-#   list in full or whose head moved after the run started. The run for the
-#   new head decides again.
-# - An update without a known type for every dependency is never armed. It
-#   gets the `unknown-label` label, one comment and a warning, and a person
-#   reviews it. Some bumps from one commit SHA to another have no type. A PR
-#   that fetch-metadata rejects, for example because its oldest commit is not
-#   a verified Dependabot commit, gets the same label and one comment.
-# - A PR with a commit that is not a verified Dependabot commit, such as a
-#   fix that a person pushed on top or a Dependabot commit that a maintainer
-#   amended and signed, is never armed. It gets the `hold-label` label unless
-#   its update type is unknown. An unsigned amend of the oldest commit makes
-#   fetch-metadata reject the PR, so it gets the `unknown-label` label. fetch-metadata checks only the oldest commit of a PR, so
-#   this workflow checks the author, committer and signature of every commit.
-# - Auto-merge is armed only for the newest commit that the workflow checked,
-#   and only when that commit is the head that the event names. GitHub
-#   refuses to arm a head that changed after the check. But a later push by
-#   someone with write access does not turn off auto-merge. It stays on until
-#   the run for that push turns it off, and if the required checks pass
-#   first, the new head can merge. A base-branch change by someone with write
-#   access, and a push that starts no workflow run, such as a push with
-#   GITHUB_TOKEN or with [skip ci] in its head commit message, keep
-#   auto-merge on with no run to turn it off. Turn off auto-merge before you
-#   push to an armed Dependabot PR or change its base branch.
-# - A hold or unknown label that no longer applies is removed, for example
-#   after `arm-github-actions` is turned on or the update type becomes known.
-# - When a run does not arm a PR, it turns off auto-merge that GITHUB_TOKEN
-#   enabled. That includes a run in which a step fails, for example when
-#   GitHub refuses to arm a head that changed after the check, or when
-#   fetch-metadata rejects the PR. GitHub reports every workflow that uses
-#   GITHUB_TOKEN as the same bot, so the run also turns off auto-merge that
-#   another workflow in the repository enabled with GITHUB_TOKEN. Auto-merge
-#   that a person enabled stays on, and the workflow does not arm over it.
-# - The workflow creates only the labels that the repository lacks, so an
-#   existing label keeps its color and description. As on GitHub, label names
-#   match without regard to case.
-# - schedule: closes a grouped Dependabot PR that a newer open Dependabot PR
-#   with the same branch key, group, directories and base branch supersedes, with
-#   a comment naming the newer PR. It closes the older PR only when the newer
-#   PR changes every file that the older PR changes, and every commit on the
-#   older PR is a verified Dependabot commit. The API lists at most 3000
-#   files and 250 commits, and a list that reaches its limit fails the check.
-#   A PR that fails one of these checks stays open.
+# README.md is the canonical description of what this workflow does, its
+# preconditions and its inputs:
+# https://github.com/Reverie-Development-Inc/reverie-workflows#dependabot-auto-merge
 #
 # Why `hold-groups`: a date-style version such as 2026.7.1 to 2026.10.5 counts
-# as a minor update, so a group of such dependencies auto-merges unless it is
-# listed. It matches Dependabot groups only: to hold an ungrouped dependency,
-# put it in a group. A listed name also matches the subgroups that
-# `group-by: dependency-name` makes, which are named <name>/<dependency>. A
-# Dependabot group covers version updates only, unless it sets
-# `applies-to: security-updates`. To hold the security updates of a
-# dependency too, list a security-updates group in `hold-groups` as well.
+# as a minor update, so a group of such dependencies would auto-merge unless
+# `hold-groups` lists it.
 #
 # Why native auto-merge: it waits for the base branch's required status
 # checks, which a scheduled poller would have to re-implement by hand. A
 # branch with no required checks is refused below, because GitHub would merge
 # it at once.
 #
-# Why `arm-github-actions`: a GitHub Actions update changes files under
-# .github/workflows/ and brings in third-party action code. Arming it removes
-# the human review of that code, so a caller sets `arm-github-actions: true`
-# only when every github-actions entry in its dependabot.yml has a Dependabot
-# `cooldown`. This repository uses 7 days. If GitHub refuses an armed merge,
-# the PR stays open with its marker label. Dependabot applies `cooldown` to
-# version updates only. With `arm-github-actions: true`, a security update
-# for an Action is armed as soon as it opens. The workflow cannot tell a
-# security update from a version update: fetch-metadata reports that only
-# with `alert-lookup`, which needs a token that can read Dependabot alerts,
-# and this workflow uses GITHUB_TOKEN only.
+# Why `arm-github-actions`: a GitHub Actions update brings in third-party
+# action code, and arming it removes the human review of that code.
 #
-# Dependabot-triggered runs get a read-only GITHUB_TOKEN by default; the
-# caller's `permissions:` block raises it to the two scopes used here.
-# Nothing here reads repository secrets, so Dependabot secrets are not needed.
-#
-# Preconditions, checked at run time and failed loud: the repository allows
-# auto-merge (`gh repo edit --enable-auto-merge`), and the base branch has at
-# least one required status check in a ruleset.
-#
-# A red required check keeps the PR open (auto-merge waits for green).
-# That is the safety property: this workflow never merges on its own evidence.
-#
-# Gate labels (any label-triggered required check) must be added by a person.
-# A label added with GITHUB_TOKEN starts no workflow run (GitHub suppresses
-# GITHUB_TOKEN-triggered events except dispatch), so the gate would never run.
-# Auto-merge stays armed and merges once that run is green.
+# Why the caller sets `permissions:`: Dependabot-triggered runs get a read-only
+# GITHUB_TOKEN by default, and the caller's block raises it to the two scopes
+# used here. Nothing here reads repository secrets, so Dependabot secrets are
+# not needed.
 
 name: Dependabot auto-merge (reusable)
 
@@ -126,11 +43,11 @@ on:
   workflow_call:
     inputs:
       auto-merge:
-        description: enable auto-merge for patch and minor updates (false labels them with hold-label instead)
+        description: arm patch and minor updates (false applies hold-label instead)
         type: boolean
         default: true
       arm-github-actions:
-        description: also arm patch and minor GitHub Actions updates when auto-merge is true. Set it only when every github-actions entry in dependabot.yml has a cooldown
+        description: also arm patch and minor GitHub Actions updates when auto-merge is true. Set it only if every github-actions entry has a cooldown
         type: boolean
         default: false
       merge-method:
@@ -142,23 +59,33 @@ on:
         type: string
         default: "dependencies: major"
       actions-label:
-        description: marker label applied to every GitHub Actions update that fetch-metadata can read, whatever its update type
+        description: marker label for every GitHub Actions update that fetch-metadata can read
         type: string
         default: "dependencies: actions"
       hold-label:
-        description: label for a patch or minor update that is not armed (auto-merge or, for GitHub Actions, arm-github-actions is false), and for any known update in a hold-groups group, with a commit that Dependabot did not make, with commits that the API cannot list in full, or with a head that moved after the run started, which a maintainer merges
+        description: label for a patch or minor update that a maintainer merges, and for a known update that is held for another reason (see the README)
         type: string
         default: "dependencies: ready"
       unknown-label:
-        description: label for an update without a known type for every dependency, which a person reviews
+        description: label for an update without a known type for every dependency
         type: string
         default: "dependencies: review"
       hold-groups:
-        description: comma-separated Dependabot group names whose PRs are never armed. A PR with a known update type gets hold-label. A name also matches its group-by subgroups (name/dependency). It matches groups only, so put an ungrouped dependency in a group to hold it. A group covers version updates only unless its applies-to is security-updates, so also list a security-updates group to hold security updates
+        description: comma-separated Dependabot group names whose PRs are never armed
         type: string
         default: ""
 
 permissions: {}
+
+# The one definition of a verified Dependabot commit, which the decide step of
+# the triage job and the sweep both read. COMMIT_JQ prints one line for each
+# commit, and DEPENDABOT_COMMIT_RE matches the line of a trusted commit. The
+# API lists at most COMMIT_LIST_CAP commits, so a PR with that many cannot be
+# checked in full.
+env:
+  COMMIT_JQ: '.[] | "\(.sha) \(.author.login // "-") \(.committer.login // "-") \(.commit.verification.verified // false)"'
+  DEPENDABOT_COMMIT_RE: '^[0-9a-f]+ dependabot\[bot\] web-flow true$'
+  COMMIT_LIST_CAP: "250"
 
 jobs:
   triage:
@@ -230,16 +157,15 @@ jobs:
           # Every commit must be a verified Dependabot commit. GitHub verifies
           # the signature of the committer, and Dependabot's commits have the
           # committer web-flow, so a maintainer who amends or rebases with
-          # signing keeps the author but not the committer. The API lists at
-          # most 250 commits, so a PR with that many cannot be checked in full.
+          # signing keeps the author but not the committer.
           commits=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/commits?per_page=100" --paginate \
-            --jq '.[] | "\(.sha) \(.author.login // "-") \(.committer.login // "-") \(.commit.verification.verified // false)"')
+            --jq "$COMMIT_JQ")
           count=$(grep -c . <<<"$commits" || true)
-          foreign=$(grep -cvE '^[0-9a-f]+ dependabot\[bot\] web-flow true$' <<<"$commits" || true)
+          foreign=$(grep -cvE "$DEPENDABOT_COMMIT_RE" <<<"$commits" || true)
           # The newest commit that was checked. Auto-merge is armed for it only.
           head=$(tail -n 1 <<<"$commits" | cut -d ' ' -f 1)
           trusted=false
-          if [ "$count" -eq 0 ] || [ "$count" -ge 250 ]; then
+          if [ "$count" -eq 0 ] || [ "$count" -ge "$COMMIT_LIST_CAP" ]; then
             why="the commits of this PR cannot all be listed"
           elif [ "$foreign" -gt 0 ]; then
             why="a commit on this PR is not a verified Dependabot commit"
@@ -523,12 +449,11 @@ jobs:
           # branch name, so two update streams can still share a key above.
           # The older PR is closed only when the newer PR changes every file
           # that it changes, and only when every commit on it is a verified
-          # Dependabot commit, as in the decide step of the triage job. So a PR
-          # with a fix that a maintainer pushed is not closed, and its branch
-          # is not deleted. The API lists at most 3000 files and 250 commits,
-          # and a list that reaches its limit fails the check. Read the pairs
-          # on their own descriptor, so no command in the loop can consume
-          # them from stdin.
+          # Dependabot commit. So a PR with a fix that a maintainer pushed is
+          # not closed, and its branch is not deleted. The API lists at most
+          # 3000 files and COMMIT_LIST_CAP commits, and a list that reaches its
+          # limit fails the check. Read the pairs on their own descriptor, so
+          # no command in the loop can consume them from stdin.
           while read -r -u 3 old new; do
             old_files=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$old/files?per_page=100" --paginate --jq '.[].filename')
             new_files=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$new/files?per_page=100" --paginate --jq '.[].filename')
@@ -537,15 +462,15 @@ jobs:
             # The files that the older PR changes and the newer PR does not.
             missing=$(LC_ALL=C comm -23 <(LC_ALL=C sort -u <<<"$old_files") <(LC_ALL=C sort -u <<<"$new_files"))
             commits=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$old/commits?per_page=100" --paginate \
-              --jq '.[] | "\(.sha) \(.author.login // "-") \(.committer.login // "-") \(.commit.verification.verified // false)"')
+              --jq "$COMMIT_JQ")
             count=$(grep -c . <<<"$commits" || true)
-            foreign=$(grep -cvE '^[0-9a-f]+ dependabot\[bot\] web-flow true$' <<<"$commits" || true)
+            foreign=$(grep -cvE "$DEPENDABOT_COMMIT_RE" <<<"$commits" || true)
             why=""
             if [ "$old_count" -ge 3000 ] || [ "$new_count" -ge 3000 ]; then
               why="the changed files of #$old or #$new cannot all be listed"
             elif [ -n "$missing" ]; then
               why="#$new does not change every file that #$old changes"
-            elif [ "$count" -eq 0 ] || [ "$count" -ge 250 ]; then
+            elif [ "$count" -eq 0 ] || [ "$count" -ge "$COMMIT_LIST_CAP" ]; then
               why="the commits of #$old cannot all be listed"
             elif [ "$foreign" -gt 0 ]; then
               why="a commit on #$old is not a verified Dependabot commit"

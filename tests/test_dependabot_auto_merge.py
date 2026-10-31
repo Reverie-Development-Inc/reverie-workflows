@@ -6,6 +6,7 @@ answers the API calls the steps make and records every call, and the real `jq`
 evaluates the workflow's own `--jq` filters against the canned responses.
 `Triage` runs every step of the triage job in order, and evaluates the step
 `env` and `if:` expressions as GitHub does for the few forms that job uses.
+Every step also gets the workflow-level `env`, as on GitHub.
 """
 
 import dataclasses
@@ -186,6 +187,11 @@ def step_script(name):
     raise AssertionError(f"step {name!r} not found in {WORKFLOW}")
 
 
+def workflow_env():
+    """The workflow-level `env`, which GitHub passes to every step."""
+    return {key: str(value) for key, value in yaml.safe_load(WORKFLOW.read_text())["env"].items()}
+
+
 def install_stub(tmp, repo_labels=()):
     """Puts the stub `gh` first on PATH and returns the environment for a step."""
     stub = tmp / "gh"
@@ -197,7 +203,7 @@ def install_stub(tmp, repo_labels=()):
     commits.write_text(json.dumps([DEPENDABOT_COMMIT]))
     files = tmp / "files.json"
     files.write_text(json.dumps([{"filename": "package.json"}]))
-    env = dict(os.environ)
+    env = {**os.environ, **workflow_env()}
     env.update({
         "PATH": f"{tmp}:{env['PATH']}",
         "STUB_LOG": str(tmp / "calls.log"),
@@ -979,7 +985,7 @@ class SweepStep(unittest.TestCase):
         script = tmp / "sweep.sh"
         script.write_text(step_script(SWEEP_STEP))
         log = tmp / "calls.log"
-        env = dict(os.environ)
+        env = {**os.environ, **workflow_env()}
         env.update({"PATH": f"{tmp}:{env['PATH']}", "STUB_LOG": str(log), "STUB_PRS": str(fixture),
                     "STUB_FAIL_READS": "\n".join(fail_reads), "GITHUB_REPOSITORY": "org/repo", "GH_TOKEN": "stub"})
         work = tmp / "work"
