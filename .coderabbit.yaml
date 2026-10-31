@@ -1,0 +1,18 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# request_changes_workflow stays false so CodeRabbit never approves a pull
+# request on its own after its comments are resolved. The field controls only
+# its approval action; the merge bar is set outside this file.
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  auto_review:
+    # Reviews run on request, with an explicit "@coderabbitai review", so the
+    # shared review allowance is spent at the merge gate, not on every push.
+    enabled: false
+    drafts: false
+    auto_incremental_review: false
+    ignore_usernames:
+      # Dependency update pull requests get no review.
+      - "dependabot[bot]"
