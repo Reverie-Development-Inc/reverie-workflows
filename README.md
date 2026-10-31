@@ -33,6 +33,8 @@ A red required check keeps the PR open, because auto-merge waits for green. The 
 
 A person must add a gate label, which is any label that a required check needs. A label that `GITHUB_TOKEN` adds starts no workflow run, so the gate would never run. Auto-merge stays armed and merges once that run is green.
 
+A gate protects a PR only when its required check fails or stays pending until the label is present, and its workflow also runs on `labeled`. GitHub reports a job that an `if:` condition skips as a success, even for a required check, so auto-merge can merge before anyone adds the label.
+
 ### GitHub Actions updates
 
 A GitHub Actions update changes files under `.github/workflows/` and brings in third-party action code. The workflow arms it only when `auto-merge` and `arm-github-actions` are both `true`. A patch or minor GitHub Actions update that is not armed because `auto-merge` or `arm-github-actions` is off gets the hold label. If GitHub refuses an armed merge, the PR stays open with its marker label.
