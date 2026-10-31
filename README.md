@@ -19,15 +19,21 @@ Reusable GitHub Actions workflows for Reverie Development repositories.
 - A PR with a commit that is not a verified Dependabot commit, such as a fix that a person pushed on top or a Dependabot commit that a maintainer amended and signed, is never armed. It gets the hold label, unless its update type is unknown. When a maintainer amends the oldest commit without signing it, fetch-metadata rejects the PR, so it gets the unknown label instead. fetch-metadata checks only the oldest commit of a PR, so the workflow checks the author, the committer and the signature of every commit. Dependabot's commits have the committer `web-flow`.
 - The workflow arms auto-merge only for the newest commit that it checked, and only when that commit is the head that the triggering event names. GitHub refuses to arm a head that changed after the check. But a later push by someone with write access does not turn off auto-merge. Auto-merge stays on until the workflow run for that push turns it off, and if the required checks pass first, the new head can merge. A base-branch change by someone with write access, and a push that starts no workflow run, such as a push with `GITHUB_TOKEN` or with `[skip ci]` in its head commit message, keep auto-merge on with no run to turn it off. Turn off auto-merge before you push to an armed Dependabot PR or change its base branch.
 - When a run does not arm a PR, the workflow turns off auto-merge that `GITHUB_TOKEN` enabled. This includes a run in which a step fails, for example when GitHub refuses to arm a head that changed after the check, or when fetch-metadata rejects the PR. GitHub reports every workflow that uses `GITHUB_TOKEN` as the same bot. So the workflow also turns off auto-merge that another workflow in the repository enabled with `GITHUB_TOKEN`. Auto-merge that a person enabled stays on, and the workflow does not arm over it.
-- A weekly run closes a grouped Dependabot PR that a newer one supersedes. The PR title identifies a grouped PR, its group and its directories. The run compares only PRs with the same base branch, the same branch name before the hash, and the same group and directories. It keeps the older PR open, and logs a notice with the reason, unless both of these are true:
+- A weekly run closes a grouped Dependabot PR that a newer one supersedes, with a comment that names the newer PR. The PR title identifies a grouped PR, its group and its directories. The run compares only PRs with the same base branch, the same branch name before the hash, and the same group and directories. It keeps the older PR open, and logs a notice with the reason, unless both of these are true:
   - The newer PR changes every file that the older PR changes. The API lists at most 3000 files of a PR, so the older PR stays open when either list reaches 3000.
-  - Every commit on the older PR is a verified Dependabot commit, by the same check that the workflow makes before it arms a PR. So the run does not close a PR that has a fix from a person, or delete its branch.
+  - Every commit on the older PR is a verified Dependabot commit, by the same check that the workflow makes before it arms a PR. So the run does not close a PR that has a fix from a person, or delete its branch. The API lists at most 250 commits of a PR, so the older PR stays open when its list reaches 250.
 
 The workflow creates only the labels that the repository does not have. It does not change the color or description of an existing label. As on GitHub, label names match without regard to case.
 
 Runs for the same PR do not overlap. GitHub keeps one pending run for each PR. A newer run cancels an older pending run, and the newest run executes.
 
 Preconditions: the repository allows auto-merge, and the base branch's required status checks are defined in a repository ruleset. The workflow reads rulesets only, not classic branch protection, and it refuses to arm auto-merge, with an error, when either precondition fails. A failed arm leaves the PR with no hold label and no auto-merge that `GITHUB_TOKEN` enabled, and the run fails.
+
+A red required check keeps the PR open, because auto-merge waits for green. The workflow never merges on its own evidence.
+
+A person must add a gate label, which is any label that a required check needs. A label that `GITHUB_TOKEN` adds starts no workflow run, so the gate would never run. Auto-merge stays armed and merges once that run is green.
+
+A gate protects a PR only when its required check fails or stays pending until the label is present, and its workflow also runs on `labeled`. GitHub reports a job that an `if:` condition skips as a success, even for a required check, so auto-merge can merge before anyone adds the label.
 
 ### GitHub Actions updates
 
